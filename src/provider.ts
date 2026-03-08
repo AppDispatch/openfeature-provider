@@ -177,11 +177,16 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
       }
 
       const url = new URL("/v1/ota/flag-evaluations", this.options.baseUrl);
-      await fetch(url.toString(), {
+      const res = await fetch(url.toString(), {
         method: "POST",
         headers,
         body: JSON.stringify(body),
       });
+      if (!res.ok) {
+        console.warn(
+          `[AppDispatch] Failed to report evaluations: ${res.status}${res.status === 401 ? " (missing or invalid apiKey)" : ""}`,
+        );
+      }
     } catch (err) {
       console.warn("[AppDispatch] Failed to report evaluations:", err);
     }
@@ -222,5 +227,25 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
   /** Get all currently loaded flag definitions (for debugging) */
   getFlags(): ReadonlyMap<string, FlagDefinition> {
     return this.flags;
+  }
+
+  /**
+   * Attach a health reporter for flag-error correlation.
+   * Provides a callback that returns the last resolved value for each enabled flag.
+   * Duck-typed — no hard dependency on @appdispatch/health-reporter.
+   */
+  attachHealthReporter(
+    reporter: { setFlagStateProvider(fn: () => Record<string, unknown>): void },
+  ): void {
+    reporter.setFlagStateProvider(() => {
+      const states: Record<string, unknown> = {};
+      for (const compositeKey of Object.keys(this.evalBuffer)) {
+        const entry = this.evalBuffer[compositeKey];
+        if (entry) {
+          states[entry.flagKey] = entry.variationValue;
+        }
+      }
+      return states;
+    });
   }
 }
