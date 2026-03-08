@@ -30,6 +30,7 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private evalBuffer: EvalBuffer = {};
+  private lastKnownFlagStates: Record<string, unknown> = {};
   private lastContext: EvaluationContext | null = null;
   private readonly options: Required<
     Pick<DispatchProviderOptions, "baseUrl" | "projectSlug">
@@ -90,11 +91,11 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
     return this.resolve(flagKey, defaultValue, context);
   }
 
-  resolveObjectEvaluation(
+  resolveObjectEvaluation<T extends JsonValue>(
     flagKey: string,
-    defaultValue: JsonValue,
+    defaultValue: T,
     context: EvaluationContext,
-  ): ResolutionDetails<JsonValue> {
+  ): ResolutionDetails<T> {
     return this.resolve(flagKey, defaultValue, context);
   }
 
@@ -133,6 +134,8 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
     } else {
       this.evalBuffer[key] = { flagKey, variationValue: value, count: 1 };
     }
+    // Persist latest value per flag for health reporter correlation
+    this.lastKnownFlagStates[flagKey] = value;
     this.lastContext = context;
   }
 
@@ -237,15 +240,15 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
   attachHealthReporter(
     reporter: { setFlagStateProvider(fn: () => Record<string, unknown>): void },
   ): void {
-    reporter.setFlagStateProvider(() => {
-      const states: Record<string, unknown> = {};
-      for (const compositeKey of Object.keys(this.evalBuffer)) {
-        const entry = this.evalBuffer[compositeKey];
-        if (entry) {
-          states[entry.flagKey] = entry.variationValue;
-        }
-      }
-      return states;
-    });
+    reporter.setFlagStateProvider(() => ({ ...this.lastKnownFlagStates }));
+  }
+
+  /**
+   * Register this provider with an OpenFeature API instance.
+   * Handles the CommonProvider ↔ web-sdk Provider type mismatch internally
+   * so consumers don't need an `as any` cast.
+   */
+  register(openFeature: { setProvider(provider: any): void }): void {
+    openFeature.setProvider(this);
   }
 }
