@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   check-version:
@@ -59,7 +60,7 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -72,5 +73,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check-version.outputs.tag }}
-          name: "@dispatch-ota/openfeature-provider v${{ needs.check-version.outputs.version }}"
+          name: "@appdispatch/openfeature-provider v${{ needs.check-version.outputs.version }}"
           generate_release_notes: true
