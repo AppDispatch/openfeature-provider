@@ -14,12 +14,23 @@ import type {
 } from "./types";
 import { evaluateFlag } from "./evaluator";
 
+interface EvalBuffer {
+  [compositeKey: string]: {
+    flagKey: string;
+    variationValue: unknown;
+    count: number;
+  };
+}
+
 export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
   readonly metadata: ProviderMetadata = { name: "appdispatch" };
   readonly runsOn = "client" as const;
 
   private flags: Map<string, FlagDefinition> = new Map();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private evalBuffer: EvalBuffer = {};
+  private lastContext: EvaluationContext | null = null;
   private readonly options: Required<
     Pick<DispatchProviderOptions, "baseUrl" | "projectSlug">
   > &
@@ -36,6 +47,11 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
     if (interval > 0) {
       this.pollTimer = setInterval(() => this.fetchFlags(), interval);
     }
+
+    const flushInterval = this.options.flushIntervalMs ?? 60_000;
+    if (flushInterval > 0) {
+      this.flushTimer = setInterval(() => this.flush(), flushInterval);
+    }
   }
 
   async onClose(): Promise<void> {
@@ -43,6 +59,11 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    await this.flush();
   }
 
   resolveBooleanEvaluation(
@@ -93,11 +114,77 @@ export class DispatchProvider implements CommonProvider<ClientProviderStatus> {
     }
 
     const result = evaluateFlag(flag, context);
+    const value = (result.value as T) ?? defaultValue;
+
+    // Track evaluation for batched reporting
+    this.trackEvaluation(flagKey, value, context);
+
     return {
-      value: (result.value as T) ?? defaultValue,
+      value,
       variant: result.variant,
       reason: result.reason,
     };
+  }
+
+  private trackEvaluation(flagKey: string, value: unknown, context: EvaluationContext): void {
+    const key = `${flagKey}::${JSON.stringify(value)}`;
+    if (this.evalBuffer[key]) {
+      this.evalBuffer[key].count++;
+    } else {
+      this.evalBuffer[key] = { flagKey, variationValue: value, count: 1 };
+    }
+    this.lastContext = context;
+  }
+
+  /** Flush buffered evaluations to the server. */
+  async flush(): Promise<void> {
+    const entries = Object.values(this.evalBuffer);
+    const context = this.lastContext;
+    if (entries.length === 0) return;
+
+    // Clear buffer before sending so new evals accumulate in a fresh buffer
+    this.evalBuffer = {};
+    this.lastContext = null;
+
+    const body: Record<string, unknown> = {
+      evaluations: entries.map((e) => ({
+        flagKey: e.flagKey,
+        variationValue: e.variationValue,
+        count: e.count,
+        channel: this.options.channel ?? null,
+      })),
+    };
+
+    if (context?.targetingKey) {
+      body.context = {
+        targetingKey: context.targetingKey,
+        kind: (context.kind as string) ?? "user",
+        name: (context.name as string) ?? null,
+        attributes: Object.fromEntries(
+          Object.entries(context).filter(
+            ([k]) => !["targetingKey", "kind", "name"].includes(k),
+          ),
+        ),
+      };
+    }
+
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (this.options.apiKey) {
+        headers["Authorization"] = `Bearer ${this.options.apiKey}`;
+      }
+
+      const url = new URL("/v1/ota/flag-evaluations", this.options.baseUrl);
+      await fetch(url.toString(), {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      console.warn("[AppDispatch] Failed to report evaluations:", err);
+    }
   }
 
   private async fetchFlags(): Promise<void> {

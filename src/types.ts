@@ -9,6 +9,8 @@ export interface DispatchProviderOptions {
   pollIntervalMs?: number
   /** Optional API key for authenticated requests */
   apiKey?: string
+  /** Flush interval in ms for sending evaluation reports (default: 60000). Set to 0 to disable. */
+  flushIntervalMs?: number
 }
 
 export interface RuleDefinition {

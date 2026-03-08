@@ -51,6 +51,8 @@ function evaluateRule(
       return evaluateUserList(rule, flag, context)
     case 'percentage_rollout':
       return evaluatePercentageRollout(rule, flag, context)
+    case 'attribute':
+      return evaluateAttributeRule(rule, flag, context)
     default:
       return null
   }
@@ -113,6 +115,100 @@ function evaluatePercentageRollout(
 
   // Fallback (shouldn't happen if weights sum to 100)
   return null
+}
+
+function evaluateAttributeRule(
+  rule: RuleDefinition,
+  _flag: FlagDefinition,
+  context: EvaluationContext,
+): EvalResult | null {
+  const conditions = rule.ruleConfig.conditions as
+    | Array<{ attribute: string; operator: string; values: string[] }>
+    | undefined
+
+  if (!conditions || conditions.length === 0) return null
+
+  for (const condition of conditions) {
+    const attrValue = context[condition.attribute]
+
+    if (condition.operator === 'exists') {
+      if (attrValue === undefined || attrValue === null) return null
+      continue
+    }
+    if (condition.operator === 'not_exists') {
+      if (attrValue !== undefined && attrValue !== null) return null
+      continue
+    }
+
+    // All remaining operators require a non-null value
+    if (attrValue === undefined || attrValue === null) return null
+    const strValue = String(attrValue)
+
+    switch (condition.operator) {
+      case 'eq':
+        if (strValue !== condition.values[0]) return null
+        break
+      case 'neq':
+        if (strValue === condition.values[0]) return null
+        break
+      case 'in':
+        if (!condition.values.includes(strValue)) return null
+        break
+      case 'not_in':
+        if (condition.values.includes(strValue)) return null
+        break
+      case 'contains':
+        if (!strValue.includes(condition.values[0])) return null
+        break
+      case 'starts_with':
+        if (!strValue.startsWith(condition.values[0])) return null
+        break
+      case 'ends_with':
+        if (!strValue.endsWith(condition.values[0])) return null
+        break
+      case 'gt':
+      case 'gte':
+      case 'lt':
+      case 'lte': {
+        const numA = Number(strValue)
+        const numB = Number(condition.values[0])
+        if (isNaN(numA) || isNaN(numB)) return null
+        if (condition.operator === 'gt' && !(numA > numB)) return null
+        if (condition.operator === 'gte' && !(numA >= numB)) return null
+        if (condition.operator === 'lt' && !(numA < numB)) return null
+        if (condition.operator === 'lte' && !(numA <= numB)) return null
+        break
+      }
+      case 'semver_gt':
+      case 'semver_gte':
+      case 'semver_lt':
+      case 'semver_lte': {
+        const cmp = compareSemver(strValue, condition.values[0])
+        if (condition.operator === 'semver_gt' && !(cmp > 0)) return null
+        if (condition.operator === 'semver_gte' && !(cmp >= 0)) return null
+        if (condition.operator === 'semver_lt' && !(cmp < 0)) return null
+        if (condition.operator === 'semver_lte' && !(cmp <= 0)) return null
+        break
+      }
+      default:
+        return null
+    }
+  }
+
+  return { value: rule.variantValue, variant: undefined, reason: 'TARGETING_MATCH' }
+}
+
+function compareSemver(a: string, b: string): number {
+  const partsA = a.split('.').map(Number)
+  const partsB = b.split('.').map(Number)
+  const len = Math.max(partsA.length, partsB.length)
+  for (let i = 0; i < len; i++) {
+    const segA = partsA[i] ?? 0
+    const segB = partsB[i] ?? 0
+    if (segA > segB) return 1
+    if (segA < segB) return -1
+  }
+  return 0
 }
 
 /**
